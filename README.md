@@ -2,6 +2,8 @@
 
 A terminal-based radio player built with Rust using Radio Garden API.
 
+![Preview](images/preview.png)
+
 ## Prerequisites
 
 Install Rust:
