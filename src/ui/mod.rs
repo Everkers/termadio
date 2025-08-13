@@ -1,19 +1,17 @@
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use std::io;
-use tokio::sync::mpsc;
 
 use crate::api::{RadioClient, Hit, Station, Page};
 use crate::player::AudioPlayer;
@@ -52,7 +50,7 @@ impl App {
             current_view: View::Search,
             list_state: ListState::default(),
             current_station: None,
-            status_message: "Controls: 's'=search, 'f'=favorites, 'c'=favorite countries, 'a'=toggle favorite, SPACE=pause/play, 'x'=stop, 'q'=quit".to_string(),
+            status_message: "Controls: Ctrl+s=search, Ctrl+f=favorites, Ctrl+c=countries, 'a'=favorite, SPACE=pause/play, 'x'=stop, 'q'=quit".to_string(),
             favorites: Favorites::load().unwrap_or_default(),
         })
     }
@@ -85,12 +83,28 @@ impl App {
                 match key.code {
                     KeyCode::Char('q') => return Ok(()),
                     KeyCode::Char('s') => {
-                        self.current_view = View::Search;
-                        self.search_input.clear();
+                        if key.modifiers.contains(KeyModifiers::CONTROL) || self.current_view != View::Search {
+                            self.current_view = View::Search;
+                            self.search_input.clear();
+                        } else if self.current_view == View::Search {
+                            self.search_input.push('s');
+                        }
                     }
                     KeyCode::Char('f') => {
-                        self.current_view = View::Favorites;
-                        self.list_state.select(Some(0));
+                        if key.modifiers.contains(KeyModifiers::CONTROL) || self.current_view != View::Search {
+                            self.current_view = View::Favorites;
+                            self.list_state.select(Some(0));
+                        } else if self.current_view == View::Search {
+                            self.search_input.push('f');
+                        }
+                    }
+                    KeyCode::Char('c') => {
+                        if key.modifiers.contains(KeyModifiers::CONTROL) || self.current_view != View::Search {
+                            self.current_view = View::FavoriteCountries;
+                            self.list_state.select(Some(0));
+                        } else if self.current_view == View::Search {
+                            self.search_input.push('c');
+                        }
                     }
                     KeyCode::Enter => {
                         match self.current_view {
@@ -99,99 +113,99 @@ impl App {
                                     self.search().await?;
                                 }
                             }
-                            View::Results => {
-                                if let Some(selected) = self.list_state.selected() {
-                                    if let Some(hit) = self.search_results.get(selected) {
-                                        if hit.source.result_type == "country" {
-                                            if let Some(url) = &hit.source.url {
-                                                if let Some(country_id) = url.split('/').last() {
-                                                    let country_id = country_id.to_string();
-                                                    self.load_country_stations(&country_id).await?;
-                                                }
-                                            }
-                                        } else if hit.source.result_type == "channel" {
-                                            if let Some(page) = &hit.source.page {
-                                                if let Some(station_id) = page.url.split('/').last() {
-                                                    let station_id = station_id.to_string();
-                                                    let title = hit.source.title.clone();
-                                                    self.play_station(&station_id, &title)?;
-                                                }
-                                            }
+                    View::Results => {
+                        if let Some(selected) = self.list_state.selected() {
+                            if let Some(hit) = self.search_results.get(selected) {
+                                if hit.source.result_type == "country" {
+                                    if let Some(url) = &hit.source.url {
+                                        if let Some(country_id) = url.split('/').last() {
+                                            let country_id = country_id.to_string();
+                                            self.load_country_stations(&country_id).await?;
                                         }
                                     }
-                                }
-                            }
-                            View::Stations => {
-                                if let Some(selected) = self.list_state.selected() {
-                                    if let Some(station) = self.stations.get(selected) {
-                                        if let Some(station_id) = station.page.url.split('/').last() {
+                                } else if hit.source.result_type == "channel" {
+                                    if let Some(page) = &hit.source.page {
+                                        if let Some(station_id) = page.url.split('/').last() {
                                             let station_id = station_id.to_string();
-                                            let title = station.title.clone();
+                                            let title = hit.source.title.clone();
                                             self.play_station(&station_id, &title)?;
                                         }
                                     }
                                 }
                             }
-                            View::Favorites => {
-                                if let Some(selected) = self.list_state.selected() {
-                                    let countries_count = self.favorites.countries.len();
-                                    if selected < countries_count {
-                                        // Selected a country - load its stations
-                                        if let Some(country) = self.favorites.countries.get(selected) {
-                                            let country_id = country.id.clone();
-                                            self.load_country_stations(&country_id).await?;
-                                        }
-                                    } else {
-                                        // Selected a station - play it
-                                        let station_index = selected - countries_count;
-                                        if let Some(station) = self.favorites.stations.get(station_index) {
-                                            let station_id = station.id.clone();
-                                            let station_title = station.title.clone();
-                                            self.play_station(&station_id, &station_title)?;
-                                        }
-                                    }
-                                }
-                            }
-                            View::FavoriteCountries => {
-                                if let Some(selected) = self.list_state.selected() {
-                                    if let Some(country) = self.favorites.countries.get(selected) {
-                                        let country_id = country.id.clone();
-                                        self.load_country_stations(&country_id).await?;
-                                    }
+                        }
+                    }
+                    View::Stations => {
+                        if let Some(selected) = self.list_state.selected() {
+                            if let Some(station) = self.stations.get(selected) {
+                                if let Some(station_id) = station.page.url.split('/').last() {
+                                    let station_id = station_id.to_string();
+                                    let title = station.title.clone();
+                                    self.play_station(&station_id, &title)?;
                                 }
                             }
                         }
                     }
-                    KeyCode::Up => {
-                        if self.current_view != View::Search {
-                            let len = match self.current_view {
-                                View::Results => self.search_results.len(),
-                                View::Stations => self.stations.len(),
-                                View::Favorites => self.favorites.countries.len() + self.favorites.stations.len(),
-                                View::FavoriteCountries => self.favorites.countries.len(),
-                                _ => 0,
-                            };
-                            if len > 0 {
-                                let selected = self.list_state.selected().unwrap_or(0);
-                                self.list_state.select(Some(if selected == 0 { len - 1 } else { selected - 1 }));
+                    View::Favorites => {
+                        if let Some(selected) = self.list_state.selected() {
+                            let countries_count = self.favorites.countries.len();
+                            if selected < countries_count {
+                                // Selected a country - load its stations
+                                if let Some(country) = self.favorites.countries.get(selected) {
+                                    let country_id = country.id.clone();
+                                    self.load_country_stations(&country_id).await?;
+                                }
+                            } else {
+                                // Selected a station - play it
+                                let station_index = selected - countries_count;
+                                if let Some(station) = self.favorites.stations.get(station_index) {
+                                    let station_id = station.id.clone();
+                                    let station_title = station.title.clone();
+                                    self.play_station(&station_id, &station_title)?;
+                                }
                             }
                         }
                     }
-                    KeyCode::Down => {
-                        if self.current_view != View::Search {
-                            let len = match self.current_view {
-                                View::Results => self.search_results.len(),
-                                View::Stations => self.stations.len(),
-                                View::Favorites => self.favorites.countries.len() + self.favorites.stations.len(),
-                                View::FavoriteCountries => self.favorites.countries.len(),
-                                _ => 0,
-                            };
-                            if len > 0 {
-                                let selected = self.list_state.selected().unwrap_or(0);
-                                self.list_state.select(Some((selected + 1) % len));
+                    View::FavoriteCountries => {
+                        if let Some(selected) = self.list_state.selected() {
+                            if let Some(country) = self.favorites.countries.get(selected) {
+                                let country_id = country.id.clone();
+                                self.load_country_stations(&country_id).await?;
                             }
                         }
                     }
+                }
+            }
+            KeyCode::Up => {
+                if self.current_view != View::Search {
+                    let len = match self.current_view {
+                        View::Results => self.search_results.len(),
+                        View::Stations => self.stations.len(),
+                        View::Favorites => self.favorites.countries.len() + self.favorites.stations.len(),
+                        View::FavoriteCountries => self.favorites.countries.len(),
+                        _ => 0,
+                    };
+                    if len > 0 {
+                        let selected = self.list_state.selected().unwrap_or(0);
+                        self.list_state.select(Some(if selected == 0 { len - 1 } else { selected - 1 }));
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if self.current_view != View::Search {
+                    let len = match self.current_view {
+                        View::Results => self.search_results.len(),
+                        View::Stations => self.stations.len(),
+                        View::Favorites => self.favorites.countries.len() + self.favorites.stations.len(),
+                        View::FavoriteCountries => self.favorites.countries.len(),
+                        _ => 0,
+                    };
+                    if len > 0 {
+                        let selected = self.list_state.selected().unwrap_or(0);
+                        self.list_state.select(Some((selected + 1) % len));
+                    }
+                }
+            }
                     KeyCode::Char(' ') => {
                         if self.current_view == View::Search {
                             self.search_input.push(' ');
@@ -211,10 +225,6 @@ impl App {
                         } else {
                             match c {
                                 'a' => self.add_to_favorites(),
-                                'c' => {
-                                    self.current_view = View::FavoriteCountries;
-                                    self.list_state.select(Some(0));
-                                }
                                 'x' => {
                                     self.player.stop();
                                     self.current_station = None;
@@ -229,14 +239,14 @@ impl App {
                             self.search_input.pop();
                         }
                     }
-                    KeyCode::Esc => {
-                        match self.current_view {
-                            View::Stations => self.current_view = View::Results,
-                            View::Results => self.current_view = View::Search,
-                            View::Favorites | View::FavoriteCountries => self.current_view = View::Search,
-                            _ => {}
-                        }
-                    }
+            KeyCode::Esc => {
+                match self.current_view {
+                    View::Stations => self.current_view = View::Results,
+                    View::Results => self.current_view = View::Search,
+                    View::Favorites | View::FavoriteCountries => self.current_view = View::Search,
+                    _ => {}
+                }
+            }
                     _ => {}
                 }
             }
@@ -250,7 +260,7 @@ impl App {
                 self.search_results = results.hits.hits;
                 self.current_view = View::Results;
                 self.list_state.select(Some(0));
-                self.status_message = "Controls: 's'=search, 'f'=favorites, 'a'=toggle favorite, SPACE=pause/play, 'x'=stop, 'q'=quit".to_string();
+                self.status_message = "Controls: Ctrl+s=search, Ctrl+f=favorites, Ctrl+c=countries, 'a'=favorite, SPACE=pause/play, 'x'=stop, 'q'=quit".to_string();
             }
             Err(e) => {
                 self.status_message = format!("Search failed: {}", e);
@@ -448,7 +458,7 @@ impl App {
                 let items: Vec<ListItem> = self.search_results
                     .iter()
                     .map(|hit| {
-                        let (icon, is_fav) = match hit.source.result_type.as_str() {
+                        let (icon, _is_fav) = match hit.source.result_type.as_str() {
                             "country" => {
                                 let is_favorite = hit.source.url.as_ref()
                                     .and_then(|url| url.split('/').last())
